@@ -4,6 +4,63 @@ const { ApiResponse } = require("../utils/ApiResponse.js");
 const Contact = require("../models/contactModel.js");
 const nodemailer = require("nodemailer");
 
+const getEnquiryPayload = (body) => {
+  const name = body?.name?.trim();
+  const email = body?.email?.trim().toLowerCase();
+  const phone = body?.phone?.toString().trim() || "";
+  const message = (body?.message || body?.msg || "").trim();
+  const topic = body?.topic?.trim();
+
+  return {
+    name,
+    email,
+    phone,
+    message,
+    topic,
+  };
+};
+
+const validateEnquiryPayload = ({ name, email, message, topic }) => {
+  const requiredFields = { name, email, message, topic };
+
+  for (const [key, value] of Object.entries(requiredFields)) {
+    if (!value) {
+      throw new ApiError(400, `${key} is required`);
+    }
+  }
+};
+
+const sendEnquiryNotification = async ({ name, email, phone, message, topic }) => {
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    return {
+      sent: false,
+      reason: "SMTP credentials are not configured",
+    };
+  }
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    port: 465,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+    secure: true,
+  });
+
+  await transporter.sendMail({
+    from: process.env.SMTP_USER,
+    replyTo: email,
+    to: "toletglobetech@gmail.com",
+    subject: `Enquiry from ${name}`,
+    text: `Name: ${name}\nEmail: ${email}\nPhone: ${phone || "Not provided"}\nTopic: ${topic}\nMessage: ${message}\n`,
+  });
+
+  return {
+    sent: true,
+  };
+};
+
 const getAllEnquiries = asyncHandler(async (req, res) => {
   const enquiries = await Contact.find({});
 
@@ -17,16 +74,10 @@ const getAllEnquiries = asyncHandler(async (req, res) => {
 });
 
 const createEnquiry = asyncHandler(async (req, res) => {
-  const { name, email, phone, message, topic } = req.body;
-  const requiredFields = { name, email, phone, message, topic };
+  const enquiryPayload = getEnquiryPayload(req.body);
+  validateEnquiryPayload(enquiryPayload);
 
-  for (const [key, value] of Object.entries(requiredFields)) {
-    if (!value) {
-      throw new ApiError(400, `${key} is required`);
-    }
-  }
-
-  const enquiry = await Contact.create({ name, email, phone, message, topic });
+  const enquiry = await Contact.create(enquiryPayload);
 
   res
     .status(201)
@@ -65,41 +116,19 @@ const deleteEnquiry = asyncHandler(async (req, res) => {
 });
 
 //submit form info send to mail
-const submitData = (req, res) => {
-  try {
-    const { name, email, phone, msg, topic } = req.body;
+const submitData = asyncHandler(async (req, res) => {
+  const enquiryPayload = getEnquiryPayload(req.body);
+  validateEnquiryPayload(enquiryPayload);
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      port: 465,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      secure: true,
-    });
+  const enquiry = await Contact.create(enquiryPayload);
+  const notification = await sendEnquiryNotification(enquiryPayload);
 
-    const mailOptions = {
-      from: email,
-      to: "toletglobetech@gmail.com", // Recipient email address
-      subject: `Enquiry from ${name}`,
-      text: `Name: ${name}\nEmail: ${email}\n Phone:${phone}\nTopic: ${topic}\nMessage: ${msg}\n `,
-    };
+  const message = notification.sent
+    ? "Enquiry submitted successfully and notification email sent."
+    : "Enquiry submitted successfully. Email notification is not configured yet.";
 
-    transporter.sendMail(mailOptions, (error, info) => {
-      if (error) {
-        console.log(error);
-        res.status(400).send("Something went wrong.");
-      } else {
-        console.log("Email sent: " + info.response);
-        res.status(200).send("Form submitted successfully!");
-      }
-    });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).json("Internal server error");
-  }
-};
+  res.status(201).json(new ApiResponse(201, enquiry, message));
+});
 
 module.exports = {
   createEnquiry,
